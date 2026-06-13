@@ -13,6 +13,7 @@ const state = {
   autoRefresh: true,
   refreshTimer: null,
   totalTicks: null,
+  minVulns: 1,
   serviceDetail: null,
   perServiceChart: null,
 };
@@ -61,11 +62,12 @@ function showTab(name) {
 async function loadAll(force = false) {
   setLoading(true);
   const q = force ? "?refresh=true" : "";
+  const pq = projectionQuery(force);
   try {
     const [meta, standings, projections, services, ticks, chartData] = await Promise.all([
       fetchJson(`/api/meta${q}`),
-      fetchJson(`/api/standings${q}`),
-      fetchJson(`/api/projections${projectionQuery(force)}`),
+      fetchJson(`/api/standings${pq || q}`),
+      fetchJson(`/api/projections${pq || q}`),
       fetchJson(`/api/services${q}`),
       fetchJson(`/api/ticks${q}`),
       fetchJson(`/api/chart${q}`),
@@ -100,6 +102,7 @@ function projectionQuery(force) {
   const params = new URLSearchParams();
   if (force) params.set("refresh", "true");
   if (state.totalTicks) params.set("total_ticks", state.totalTicks);
+  if (state.minVulns > 1) params.set("min_vulns", state.minVulns);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }
@@ -120,7 +123,7 @@ function renderStandings() {
       <td class="num">${fmt(row.score)}</td>
       <td class="num">${fmt(row.ticks)}</td>
       <td class="num ${row.avg_per_tick > 0 ? "positive" : row.avg_per_tick < 0 ? "negative" : ""}">${fmt(row.avg_per_tick, 2)}</td>
-      <td class="num ${row.projected_score > 0 ? "positive" : row.projected_score < 0 ? "negative" : ""}">${fmt(row.projected_score)}${row.cap_limited ? '<span class="muted" title="Capped at ±100/service">*</span>' : ""}</td>
+      <td class="num ${row.projected_score > 0 ? "positive" : row.projected_score < 0 ? "negative" : ""}">${fmt(row.projected_score)}${row.cap_limited ? '<span class="muted" title="Capped at est. vulns × ±100">*</span>' : ""}</td>
       <td class="num ${row.last_5_tick_delta > 0 ? "positive" : row.last_5_tick_delta < 0 ? "negative" : ""}">
         ${row.last_5_tick_delta == null ? "-" : fmt(row.last_5_tick_delta)}
       </td>
@@ -157,7 +160,7 @@ function renderServices() {
   tbody.innerHTML = "";
   const sorted = [...state.services].sort((a, b) => b.total_sigma - a.total_sigma);
   if (!sorted.length || sorted.every((s) => s.ticks_seen === 0)) {
-    tbody.innerHTML = `<tr><td colspan="10" class="muted">No tick data yet — service list will populate once competition starts.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" class="muted">No tick data yet — service list will populate once competition starts.</td></tr>`;
     return;
   }
   for (const row of sorted) {
@@ -171,6 +174,7 @@ function renderServices() {
       <td class="num">${fmt(row.malicious_leak_total)}</td>
       <td class="num">${fmt(row.down_ticks)}</td>
       <td class="num">${fmt(row.win_rate * 100, 0)}%</td>
+      <td class="num">${fmt(row.estimated_vulns)}</td>
       <td class="num">${fmt(row.cap_headroom_up)}</td>
       <td class="num">${fmt(row.cap_headroom_down)}</td>
     `;
@@ -325,7 +329,7 @@ function renderPerService() {
     ["Blocks", fmt(agg.blocks), agg.blocks],
     ["Malicious hits", fmt(agg.leaks), agg.leaks],
     ["Down ticks", fmt(agg.down), agg.down],
-    ["Cap", `+${data.caps?.max ?? 100} / ${data.caps?.min ?? -100}`, 0],
+    ["Cap", `±${data.caps?.per_vuln_max ?? 100}/vuln`, 0],
   ]
     .map(([label, val, num]) => {
       const cls = num > 0 ? "positive" : num < 0 ? "negative" : "";
@@ -525,12 +529,23 @@ function bindEvents() {
 
   $("#total-ticks").addEventListener("change", async (e) => {
     state.totalTicks = e.target.value ? Number(e.target.value) : null;
-    state.projections = await fetchJson(`/api/projections${projectionQuery(false)}`);
-    renderProjections();
-    const standings = await fetchJson(`/api/standings`);
-    state.standings = standings;
-    renderStandings();
+    await refreshProjections();
   });
+
+  $("#min-vulns").addEventListener("change", async (e) => {
+    state.minVulns = Math.max(1, Number(e.target.value) || 1);
+    await refreshProjections();
+  });
+
+  async function refreshProjections() {
+    const q = projectionQuery(false);
+    state.projections = await fetchJson(`/api/projections${q}`);
+    renderProjections();
+    state.standings = await fetchJson(`/api/standings${q}`);
+    renderStandings();
+    state.services = await fetchJson(`/api/services`);
+    renderServices();
+  }
 
   $("#team-select").addEventListener("change", (e) => loadTeamDetail(Number(e.target.value)));
   $("#explore-team").addEventListener("change", renderExplore);

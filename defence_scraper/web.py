@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from defence_scraper.analysis import DEFAULT_MIN_VULNS
 from defence_scraper.api_data import (
     chart_payload,
     compare_payload,
@@ -40,18 +41,22 @@ async def api_meta(refresh: bool = Query(False)) -> dict[str, Any]:
 
 
 @app.get("/api/standings")
-async def api_standings(refresh: bool = Query(False)) -> list[dict[str, Any]]:
+async def api_standings(
+    min_vulns: int = Query(DEFAULT_MIN_VULNS, ge=1, le=20),
+    refresh: bool = Query(False),
+) -> list[dict[str, Any]]:
     snapshot = get_snapshot(force=refresh)
-    return standings_payload(snapshot)
+    return standings_payload(snapshot, min_vulns)
 
 
 @app.get("/api/projections")
 async def api_projections(
     total_ticks: int | None = Query(None, ge=1, le=500),
+    min_vulns: int = Query(DEFAULT_MIN_VULNS, ge=1, le=20),
     refresh: bool = Query(False),
 ) -> list[dict[str, Any]]:
     snapshot = get_snapshot(force=refresh)
-    return projections_payload(snapshot, total_ticks)
+    return projections_payload(snapshot, total_ticks, min_vulns)
 
 
 @app.get("/api/services")

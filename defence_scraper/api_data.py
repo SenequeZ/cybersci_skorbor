@@ -6,8 +6,9 @@ from threading import Lock
 from typing import Any
 
 from defence_scraper.analysis import (
-    SERVICE_CAP_MAX,
-    SERVICE_CAP_MIN,
+    DEFAULT_MIN_VULNS,
+    VULN_CAP_MAX,
+    VULN_CAP_MIN,
     head_to_head,
     project_all,
     service_summaries,
@@ -66,15 +67,19 @@ def snapshot_meta(snapshot: CompetitionSnapshot) -> dict[str, Any]:
     }
 
 
-def standings_payload(snapshot: CompetitionSnapshot) -> list[dict[str, Any]]:
-    df = standings_dataframe(snapshot)
+def standings_payload(snapshot: CompetitionSnapshot, min_vulns: int = DEFAULT_MIN_VULNS) -> list[dict[str, Any]]:
+    df = standings_dataframe(snapshot, min_vulns)
     if df.empty:
         return []
     return df.to_dict(orient="records")
 
 
-def projections_payload(snapshot: CompetitionSnapshot, total_ticks: int | None) -> list[dict[str, Any]]:
-    return [asdict(p) for p in project_all(snapshot, total_ticks)]
+def projections_payload(
+    snapshot: CompetitionSnapshot,
+    total_ticks: int | None,
+    min_vulns: int = DEFAULT_MIN_VULNS,
+) -> list[dict[str, Any]]:
+    return [asdict(p) for p in project_all(snapshot, total_ticks, min_vulns=min_vulns)]
 
 
 def services_payload(snapshot: CompetitionSnapshot) -> list[dict[str, Any]]:
@@ -200,5 +205,9 @@ def service_detail_payload(
         "service_info": service_info,
         "rows": rows,
         "summaries": summaries,
-        "caps": {"max": SERVICE_CAP_MAX, "min": SERVICE_CAP_MIN},
+        "caps": {
+            "per_vuln_max": VULN_CAP_MAX,
+            "per_vuln_min": VULN_CAP_MIN,
+            "note": "Vulnerability count estimated from observed stat totals (±100 each).",
+        },
     }

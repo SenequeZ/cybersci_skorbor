@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import math
+
 import pandas as pd
 
 from .models import CompetitionSnapshot, ServiceTickStats, StatKind, TeamScoreboard, TickRow
@@ -11,8 +13,9 @@ from .models import CompetitionSnapshot, ServiceTickStats, StatKind, TeamScorebo
 TICK_INTERVAL_MINUTES = 2
 PROJECTION_WINDOW = 5
 FLATLINE_LOOKBACK = 3
-SERVICE_CAP_MAX = 100
-SERVICE_CAP_MIN = -100
+VULN_CAP_MAX = 100
+VULN_CAP_MIN = -100
+DEFAULT_MIN_VULNS = 1
 
 
 @dataclass
@@ -49,6 +52,7 @@ class ServiceSummary:
     win_rate: float
     cap_headroom_up: float = 0.0
     cap_headroom_down: float = 0.0
+    estimated_vulns: int = 1
 
 
 def _estimate_total_ticks(snapshot: CompetitionSnapshot) -> int:
@@ -60,8 +64,40 @@ def _estimate_total_ticks(snapshot: CompetitionSnapshot) -> int:
     return 120
 
 
-def _clamp_service_score(score: float) -> float:
-    return max(SERVICE_CAP_MIN, min(SERVICE_CAP_MAX, score))
+def _estimate_vulns_for_service(
+    team: TeamScoreboard,
+    service_name: str,
+    min_vulns: int = DEFAULT_MIN_VULNS,
+) -> int:
+    """Infer vulnerability count from stat totals (each vuln caps at ±100)."""
+    peak = 0.0
+    sigma_total = 0.0
+    kind_totals: dict[StatKind, float] = {}
+
+    for tick in team.ticks:
+        svc = tick.service(service_name)
+        if not svc:
+            continue
+        sigma_total += svc.sigma
+        for kind in StatKind:
+            if kind in (StatKind.SIGMA, StatKind.CAPPED):
+                continue
+            kind_totals[kind] = kind_totals.get(kind, 0.0) + svc.stats[kind].numeric
+
+    candidates = [abs(sigma_total)] + [abs(v) for v in kind_totals.values()]
+    peak = max(candidates) if candidates else 0.0
+    if peak <= 0:
+        return min_vulns
+    return max(min_vulns, math.ceil(peak / VULN_CAP_MAX))
+
+
+def _service_score_bounds(vuln_count: int) -> tuple[float, float]:
+    return vuln_count * VULN_CAP_MIN, vuln_count * VULN_CAP_MAX
+
+
+def _clamp_service_score(score: float, vuln_count: int) -> float:
+    lo, hi = _service_score_bounds(vuln_count)
+    return max(lo, min(hi, score))
 
 
 def _service_names(team: TeamScoreboard) -> list[str]:
@@ -98,15 +134,21 @@ def _service_recent_pace(team: TeamScoreboard, service_name: str, window: int = 
     return sum(recent) / len(recent)
 
 
-def _project_service(current: float, pace: float, remaining: int) -> tuple[float, float]:
+def _project_service(
+    current: float,
+    pace: float,
+    remaining: int,
+    vuln_count: int,
+) -> tuple[float, float]:
     uncapped = current + pace * remaining
-    return _clamp_service_score(uncapped), uncapped
+    return _clamp_service_score(uncapped, vuln_count), uncapped
 
 
 def _project_team_with_caps(
     team: TeamScoreboard,
     remaining: int,
     window: int = PROJECTION_WINDOW,
+    min_vulns: int = DEFAULT_MIN_VULNS,
 ) -> tuple[float, float, float]:
     """Return (capped_projection, uncapped_projection, effective_pace)."""
     names = _service_names(team)
@@ -123,7 +165,8 @@ def _project_team_with_caps(
     for name in names:
         current_svc = totals.get(name, 0.0)
         pace_svc = _service_recent_pace(team, name, window)
-        projected_svc, uncapped_svc = _project_service(current_svc, pace_svc, remaining)
+        vulns = _estimate_vulns_for_service(team, name, min_vulns)
+        projected_svc, uncapped_svc = _project_service(current_svc, pace_svc, remaining, vulns)
         projected_sum += projected_svc
         uncapped_sum += uncapped_svc
 
@@ -180,6 +223,7 @@ def project_team(
     team_id: int,
     total_ticks: int | None = None,
     window: int = PROJECTION_WINDOW,
+    min_vulns: int = DEFAULT_MIN_VULNS,
 ) -> TeamProjection:
     board = snapshot.scoreboard
     team = snapshot.teams[team_id]
@@ -191,7 +235,7 @@ def project_team(
     current_score = float(board_entry.score if board_entry else team.latest_score)
     current_place = board_entry.place if board_entry else 0
 
-    projected, uncapped, pace = _project_team_with_caps(team, remaining, window)
+    projected, uncapped, pace = _project_team_with_caps(team, remaining, window, min_vulns)
     cap_limited = abs(projected - uncapped) > 0.01
 
     nets = _tick_net_series(team)
@@ -217,9 +261,10 @@ def project_all(
     snapshot: CompetitionSnapshot,
     total_ticks: int | None = None,
     window: int = PROJECTION_WINDOW,
+    min_vulns: int = DEFAULT_MIN_VULNS,
 ) -> list[TeamProjection]:
     projections = [
-        project_team(snapshot, team_id, total_ticks, window)
+        project_team(snapshot, team_id, total_ticks, window, min_vulns)
         for team_id in sorted(snapshot.teams)
     ]
     ranked = sorted(projections, key=lambda p: p.projected_final_score, reverse=True)
@@ -269,6 +314,9 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
                 else 0.0
             )
 
+            estimated_vulns = _estimate_vulns_for_service(team, service_name)
+            svc_max, svc_min = _service_score_bounds(estimated_vulns)
+
             summaries.append(
                 ServiceSummary(
                     team_id=team_id,
@@ -285,8 +333,9 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
                     capped_ticks=capped_ticks,
                     no_comm_ticks=no_comm_ticks,
                     win_rate=win_rate,
-                    cap_headroom_up=max(0.0, SERVICE_CAP_MAX - total_sigma),
-                    cap_headroom_down=max(0.0, total_sigma - SERVICE_CAP_MIN),
+                    cap_headroom_up=max(0.0, svc_max - total_sigma),
+                    cap_headroom_down=max(0.0, total_sigma - svc_min),
+                    estimated_vulns=estimated_vulns,
                 )
             )
     return summaries
@@ -312,8 +361,8 @@ def ticks_dataframe(snapshot: CompetitionSnapshot) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def standings_dataframe(snapshot: CompetitionSnapshot) -> pd.DataFrame:
-    projections = {p.team_id: p for p in project_all(snapshot)}
+def standings_dataframe(snapshot: CompetitionSnapshot, min_vulns: int = DEFAULT_MIN_VULNS) -> pd.DataFrame:
+    projections = {p.team_id: p for p in project_all(snapshot, min_vulns=min_vulns)}
     rows = []
     for team in snapshot.scoreboard.teams:
         proj = projections[team.team_id]

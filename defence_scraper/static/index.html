@@ -19,6 +19,10 @@
         Auto-refresh (30s)
       </label>
       <label>
+        <span class="muted">Min vulns/svc</span>
+        <input type="number" id="min-vulns" min="1" max="20" value="1" title="Minimum vulnerabilities assumed per service when estimating caps">
+      </label>
+      <label>
         <span class="muted">Total ticks</span>
         <input type="number" id="total-ticks" min="1" max="500" placeholder="auto">
       </label>
@@ -73,7 +77,7 @@
     <section id="tab-projections" class="tab-panel hidden">
       <div class="panel">
         <h2>Projected final standings</h2>
-        <div class="legend">Per-service pace (last 5 ticks), capped at +100 / −100 per service. * = cap binding.</div>
+        <div class="legend">±100 per vulnerability (count estimated from stat totals). * = cap binding. Adjust min vulns/svc if you know there are more.</div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -97,7 +101,7 @@
     <section id="tab-services" class="tab-panel hidden">
       <div class="panel">
         <h2>Service breakdown</h2>
-        <div class="legend">Σ totals per service, capped at ±100. Headroom = room left to gain (+) or lose (−) before cap.</div>
+        <div class="legend">Σ per service. Headroom based on estimated vulns × ±100. Est. vulns inferred from peak stat totals.</div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -110,6 +114,7 @@
                 <th class="num">Leaks</th>
                 <th class="num">Down</th>
                 <th class="num">Win%</th>
+                <th class="num">Est. vulns</th>
                 <th class="num">↑ Room</th>
                 <th class="num">↓ Room</th>
               </tr>
