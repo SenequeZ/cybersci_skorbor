@@ -13,7 +13,6 @@ const state = {
   autoRefresh: true,
   refreshTimer: null,
   totalTicks: null,
-  minVulns: 1,
   serviceDetail: null,
   perServiceChart: null,
 };
@@ -102,14 +101,17 @@ function projectionQuery(force) {
   const params = new URLSearchParams();
   if (force) params.set("refresh", "true");
   if (state.totalTicks) params.set("total_ticks", state.totalTicks);
-  if (state.minVulns > 1) params.set("min_vulns", state.minVulns);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }
 
 function renderHeader() {
   $("#title-text").textContent = state.meta.title;
-  $("#status-text").textContent = `${state.meta.status} · updated ${new Date(state.meta.scraped_at).toLocaleTimeString()}`;
+  const comp = state.meta.competition;
+  const vulnNote = comp
+    ? ` · ${comp.total_vulns} vulns (±${comp.max_theoretical_score} max)`
+    : "";
+  $("#status-text").textContent = `${state.meta.status} · updated ${new Date(state.meta.scraped_at).toLocaleTimeString()}${vulnNote}`;
 }
 
 function renderStandings() {
@@ -123,7 +125,7 @@ function renderStandings() {
       <td class="num">${fmt(row.score)}</td>
       <td class="num">${fmt(row.ticks)}</td>
       <td class="num ${row.avg_per_tick > 0 ? "positive" : row.avg_per_tick < 0 ? "negative" : ""}">${fmt(row.avg_per_tick, 2)}</td>
-      <td class="num ${row.projected_score > 0 ? "positive" : row.projected_score < 0 ? "negative" : ""}">${fmt(row.projected_score)}${row.cap_limited ? '<span class="muted" title="Capped at est. vulns × ±100">*</span>' : ""}</td>
+      <td class="num ${row.projected_score > 0 ? "positive" : row.projected_score < 0 ? "negative" : ""}">${fmt(row.projected_score)}${row.cap_limited ? '<span class="muted" title="Capped at configured vulns × ±100">*</span>' : ""}</td>
       <td class="num ${row.last_5_tick_delta > 0 ? "positive" : row.last_5_tick_delta < 0 ? "negative" : ""}">
         ${row.last_5_tick_delta == null ? "-" : fmt(row.last_5_tick_delta)}
       </td>
@@ -174,7 +176,7 @@ function renderServices() {
       <td class="num">${fmt(row.malicious_leak_total)}</td>
       <td class="num">${fmt(row.down_ticks)}</td>
       <td class="num">${fmt(row.win_rate * 100, 0)}%</td>
-      <td class="num">${fmt(row.estimated_vulns)}</td>
+      <td class="num">${fmt(row.configured_vulns)}</td>
       <td class="num">${fmt(row.streams_saturated)}</td>
       <td class="num">${fmt(row.points_capped_total)}</td>
       <td class="num">${fmt(row.cap_headroom_up)}</td>
@@ -297,8 +299,12 @@ function renderPerService() {
   if (!data) return;
 
   const info = data.service_info || {};
+  const vulns = info.vulns ?? data.caps?.configured_vulns;
+  const svcMax = data.caps?.service_max;
   $("#per-service-title").textContent = info.name || $("#per-service-select").value;
-  $("#per-service-meta").textContent = [info.address, info.description].filter(Boolean).join(" · ") || "No service metadata";
+  const metaParts = [info.address, info.description].filter(Boolean);
+  if (vulns) metaParts.push(`${vulns} vulns · cap ±${svcMax ?? vulns * 100}`);
+  $("#per-service-meta").textContent = metaParts.join(" · ") || "No service metadata";
 
   const summaries = data.summaries || [];
   const totalsBody = $("#per-service-totals-body");
@@ -338,7 +344,7 @@ function renderPerService() {
     ["Blocks", fmt(agg.blocks), agg.blocks],
     ["Malicious hits", fmt(agg.leaks), agg.leaks],
     ["Down ticks", fmt(agg.down), agg.down],
-    ["Cap", `±${data.caps?.per_vuln_max ?? 100}/vuln`, 0],
+    ["Cap", svcMax != null ? `±${svcMax} (${vulns}×100)` : `±${data.caps?.per_vuln_max ?? 100}/vuln`, 0],
   ]
     .map(([label, val, num]) => {
       const cls = num > 0 ? "positive" : num < 0 ? "negative" : "";
@@ -538,11 +544,6 @@ function bindEvents() {
 
   $("#total-ticks").addEventListener("change", async (e) => {
     state.totalTicks = e.target.value ? Number(e.target.value) : null;
-    await refreshProjections();
-  });
-
-  $("#min-vulns").addEventListener("change", async (e) => {
-    state.minVulns = Math.max(1, Number(e.target.value) || 1);
     await refreshProjections();
   });
 

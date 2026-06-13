@@ -15,6 +15,7 @@ from defence_scraper.analysis import (
     standings_dataframe,
     ticks_dataframe,
 )
+from defence_scraper.config import get_competition_config
 from defence_scraper.models import STAT_COLUMNS, CompetitionSnapshot, StatKind
 from defence_scraper.scraper import scrape_all
 
@@ -46,6 +47,8 @@ def invalidate_cache() -> None:
 
 
 def snapshot_meta(snapshot: CompetitionSnapshot) -> dict[str, Any]:
+    config = get_competition_config()
+    total_vulns = sum(s.vulns for s in config.services)
     return {
         "scraped_at": snapshot.scraped_at.isoformat(),
         "title": snapshot.scoreboard.title,
@@ -64,7 +67,20 @@ def snapshot_meta(snapshot: CompetitionSnapshot) -> dict[str, Any]:
             {"id": t.team_id, "name": t.name, "place": t.place, "score": t.score}
             for t in snapshot.scoreboard.teams
         ],
+        "competition": {
+            "services": [
+                {"name": s.name, "address": s.address, "vulns": s.vulns}
+                for s in config.services
+            ],
+            "total_vulns": total_vulns,
+            "max_theoretical_score": total_vulns * VULN_CAP_MAX,
+            "min_theoretical_score": total_vulns * VULN_CAP_MIN,
+        },
     }
+
+
+def competition_config_payload() -> dict[str, Any]:
+    return get_competition_config().to_dict()
 
 
 def standings_payload(snapshot: CompetitionSnapshot, min_vulns: int = DEFAULT_MIN_VULNS) -> list[dict[str, Any]]:
@@ -148,9 +164,11 @@ def service_detail_payload(
     service: str | None = None,
     team_id: int | None = None,
 ) -> dict[str, Any]:
+    config = get_competition_config()
     services = _all_service_names(snapshot)
     rows: list[dict[str, Any]] = []
     service_info: dict[str, Any] = {}
+    cfg_svc = config.by_name().get(service) if service else None
 
     for tid, team in sorted(snapshot.teams.items()):
         if team_id is not None and tid != team_id:
@@ -193,6 +211,17 @@ def service_detail_payload(
                     row[f"{kind.value}_capped_discarded"] = val.capped_discarded
                 rows.append(row)
 
+    if cfg_svc:
+        service_info = {
+            **service_info,
+            "name": cfg_svc.name,
+            "address": cfg_svc.address or service_info.get("address"),
+            "description": cfg_svc.description or service_info.get("description"),
+            "vulns": cfg_svc.vulns,
+            "requests_per_tick": cfg_svc.requests_per_tick,
+            "schedule": [{"tick": s.tick, "set": s.set} for s in cfg_svc.schedule],
+        }
+
     summaries: list[dict[str, Any]] = []
     for summary in service_summaries(snapshot):
         if service and summary.service != service:
@@ -201,6 +230,7 @@ def service_detail_payload(
             continue
         summaries.append(asdict(summary))
 
+    vulns = cfg_svc.vulns if cfg_svc else None
     return {
         "services": services,
         "service_info": service_info,
@@ -209,6 +239,9 @@ def service_detail_payload(
         "caps": {
             "per_vuln_max": VULN_CAP_MAX,
             "per_vuln_min": VULN_CAP_MIN,
-            "note": "Vulnerability count estimated from observed stat totals (±100 each).",
+            "configured_vulns": vulns,
+            "service_max": vulns * VULN_CAP_MAX if vulns else None,
+            "service_min": vulns * VULN_CAP_MIN if vulns else None,
+            "note": "Caps use configured vuln counts (±100 per vuln). Scoreboard /discarded signals dampen pace.",
         },
     }

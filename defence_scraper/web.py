@@ -16,6 +16,7 @@ from defence_scraper.api_data import (
     projections_payload,
     service_detail_payload,
     services_payload,
+    competition_config_payload,
     snapshot_meta,
     standings_payload,
     team_detail_payload,
@@ -32,6 +33,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/api/competition-config")
+async def api_competition_config() -> dict[str, Any]:
+    return competition_config_payload()
 
 
 @app.get("/api/meta")

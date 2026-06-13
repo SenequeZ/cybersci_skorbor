@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from .config import get_competition_config
 from .models import CompetitionSnapshot, ServiceTickStats, StatKind, TeamScoreboard, TickRow
 
 
@@ -50,9 +51,13 @@ class ServiceSummary:
     win_rate: float
     cap_headroom_up: float = 0.0
     cap_headroom_down: float = 0.0
-    estimated_vulns: int = 1
+    configured_vulns: int = 1
     streams_saturated: int = 0
     points_capped_total: float = 0.0
+
+
+def _service_vuln_count(service_name: str, fallback: int = DEFAULT_MIN_VULNS) -> int:
+    return get_competition_config().vulns_for(service_name, fallback)
 
 
 def _estimate_total_ticks(snapshot: CompetitionSnapshot) -> int:
@@ -133,8 +138,8 @@ def _estimate_vulns_for_service(
     service_name: str,
     min_vulns: int = DEFAULT_MIN_VULNS,
 ) -> int:
-    """Each scoring column tracks a separate ±100 vulnerability stream."""
-    return max(min_vulns, len(_active_streams(team, service_name, min_vulns)))
+    """Known vuln count from competition config (fallback if service unknown)."""
+    return _service_vuln_count(service_name, min_vulns)
 
 
 def _service_projection_bounds(
@@ -142,15 +147,9 @@ def _service_projection_bounds(
     service_name: str,
     min_vulns: int,
 ) -> tuple[float, float]:
-    """Return (min_score, max_score) using per-stream cap signals from the scoreboard."""
-    current = _service_totals(team).get(service_name, 0.0)
-    streams = _active_streams(team, service_name, min_vulns)
-    saturated = sum(1 for kind in streams if _stream_at_cap(team, service_name, kind))
-    growing = max(0, len(streams) - saturated)
-
-    max_score = current + growing * VULN_CAP_MAX
-    min_score = current - growing * VULN_CAP_MAX
-    return min_score, max_score
+    """Return (min_score, max_score) using configured vulns × ±100 per service."""
+    vulns = _service_vuln_count(service_name, min_vulns)
+    return _service_score_bounds(vulns)
 
 
 def _service_score_bounds(vuln_count: int) -> tuple[float, float]:
@@ -407,10 +406,10 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
                 else 0.0
             )
 
-            estimated_vulns = _estimate_vulns_for_service(team, service_name)
-            streams = _active_streams(team, service_name, DEFAULT_MIN_VULNS)
+            configured_vulns = _service_vuln_count(service_name)
+            streams = _active_streams(team, service_name, configured_vulns)
             streams_saturated = sum(1 for kind in streams if _stream_at_cap(team, service_name, kind))
-            svc_min, svc_max = _service_projection_bounds(team, service_name, DEFAULT_MIN_VULNS)
+            svc_min, svc_max = _service_score_bounds(configured_vulns)
 
             summaries.append(
                 ServiceSummary(
@@ -430,7 +429,7 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
                     win_rate=win_rate,
                     cap_headroom_up=max(0.0, svc_max - total_sigma),
                     cap_headroom_down=max(0.0, total_sigma - svc_min),
-                    estimated_vulns=estimated_vulns,
+                    configured_vulns=configured_vulns,
                     streams_saturated=streams_saturated,
                     points_capped_total=points_capped_total,
                 )
