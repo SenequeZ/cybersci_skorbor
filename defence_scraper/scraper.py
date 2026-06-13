@@ -143,12 +143,28 @@ def _parse_stat_cell(td: Tag) -> StatValue:
         return StatValue(raw=raw or "-", value=None, no_comm=raw == "-")
 
     capped_span = td.find("span", class_="capped")
-    if capped_span or raw.startswith("/"):
-        number = re.sub(r"[^\d.-]", "", raw)
+
+    if capped_span or "/" in raw:
+        discarded_text = capped_span.get_text(strip=True) if capped_span else ""
+        if discarded_text.startswith("/"):
+            discarded_text = discarded_text[1:]
+
+        if "/" in raw:
+            counted_part, _, discard_part = raw.partition("/")
+            counted = float(counted_part) if counted_part.strip() not in {"", "-"} else 0.0
+            discarded = float(discard_part) if discard_part.strip() else float(discarded_text or 0)
+        elif raw.startswith("/"):
+            counted = 0.0
+            discarded = float(re.sub(r"[^\d.-]", "", raw) or 0)
+        else:
+            counted = float(re.sub(r"[^\d.-]", "", raw.split("/")[0]) or 0)
+            discarded = float(re.sub(r"[^\d.-]", "", discarded_text) or 0)
+
         return StatValue(
             raw=raw,
-            value=float(number) if number else None,
+            value=counted,
             capped=True,
+            capped_discarded=discarded,
         )
 
     try:

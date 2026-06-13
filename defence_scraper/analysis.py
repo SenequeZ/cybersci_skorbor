@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import math
-
 import pandas as pd
 
 from .models import CompetitionSnapshot, ServiceTickStats, StatKind, TeamScoreboard, TickRow
@@ -53,6 +51,8 @@ class ServiceSummary:
     cap_headroom_up: float = 0.0
     cap_headroom_down: float = 0.0
     estimated_vulns: int = 1
+    streams_saturated: int = 0
+    points_capped_total: float = 0.0
 
 
 def _estimate_total_ticks(snapshot: CompetitionSnapshot) -> int:
@@ -64,39 +64,100 @@ def _estimate_total_ticks(snapshot: CompetitionSnapshot) -> int:
     return 120
 
 
+SCORING_STREAMS: tuple[StatKind, ...] = (
+    StatKind.BENIGN_OK,
+    StatKind.BENIGN_FAIL,
+    StatKind.MALICIOUS_OK,
+    StatKind.MALICIOUS_FAIL,
+    StatKind.DOWN,
+)
+
+
+def _scoring_streams() -> tuple[StatKind, ...]:
+    return SCORING_STREAMS
+
+
+def _stream_cumulative(team: TeamScoreboard, service_name: str, kind: StatKind) -> float:
+    total = 0.0
+    for tick in team.ticks:
+        svc = tick.service(service_name)
+        if svc:
+            total += svc.stats[kind].numeric
+    return total
+
+
+def _stream_saw_cap_activity(team: TeamScoreboard, service_name: str, kind: StatKind) -> bool:
+    for tick in team.ticks:
+        svc = tick.service(service_name)
+        if not svc:
+            continue
+        val = svc.stats[kind]
+        if val.capped and (val.capped_discarded or 0) > 0:
+            return True
+    return False
+
+
+def _stream_at_cap(team: TeamScoreboard, service_name: str, kind: StatKind) -> bool:
+    cumulative = _stream_cumulative(team, service_name, kind)
+    if abs(cumulative) >= VULN_CAP_MAX:
+        return True
+    trailing = team.ticks[-FLATLINE_LOOKBACK:]
+    if not trailing:
+        return False
+    saw_discard = False
+    for tick in trailing:
+        svc = tick.service(service_name)
+        if not svc:
+            continue
+        val = svc.stats[kind]
+        if val.capped and (val.capped_discarded or 0) > 0:
+            saw_discard = True
+        elif val.numeric != 0 and not val.capped:
+            return False
+    return saw_discard
+
+
+def _active_streams(team: TeamScoreboard, service_name: str, min_vulns: int) -> list[StatKind]:
+    active: list[StatKind] = []
+    for kind in _scoring_streams():
+        cumulative = _stream_cumulative(team, service_name, kind)
+        if abs(cumulative) > 0.01 or _stream_saw_cap_activity(team, service_name, kind):
+            active.append(kind)
+    if len(active) < min_vulns:
+        return list(_scoring_streams())[:max(min_vulns, 1)]
+    return active
+
+
 def _estimate_vulns_for_service(
     team: TeamScoreboard,
     service_name: str,
     min_vulns: int = DEFAULT_MIN_VULNS,
 ) -> int:
-    """Infer vulnerability count from stat totals (each vuln caps at ±100)."""
-    peak = 0.0
-    sigma_total = 0.0
-    kind_totals: dict[StatKind, float] = {}
+    """Each scoring column tracks a separate ±100 vulnerability stream."""
+    return max(min_vulns, len(_active_streams(team, service_name, min_vulns)))
 
-    for tick in team.ticks:
-        svc = tick.service(service_name)
-        if not svc:
-            continue
-        sigma_total += svc.sigma
-        for kind in StatKind:
-            if kind in (StatKind.SIGMA, StatKind.CAPPED):
-                continue
-            kind_totals[kind] = kind_totals.get(kind, 0.0) + svc.stats[kind].numeric
 
-    candidates = [abs(sigma_total)] + [abs(v) for v in kind_totals.values()]
-    peak = max(candidates) if candidates else 0.0
-    if peak <= 0:
-        return min_vulns
-    return max(min_vulns, math.ceil(peak / VULN_CAP_MAX))
+def _service_projection_bounds(
+    team: TeamScoreboard,
+    service_name: str,
+    min_vulns: int,
+) -> tuple[float, float]:
+    """Return (min_score, max_score) using per-stream cap signals from the scoreboard."""
+    current = _service_totals(team).get(service_name, 0.0)
+    streams = _active_streams(team, service_name, min_vulns)
+    saturated = sum(1 for kind in streams if _stream_at_cap(team, service_name, kind))
+    growing = max(0, len(streams) - saturated)
+
+    max_score = current + growing * VULN_CAP_MAX
+    min_score = current - growing * VULN_CAP_MAX
+    return min_score, max_score
 
 
 def _service_score_bounds(vuln_count: int) -> tuple[float, float]:
     return vuln_count * VULN_CAP_MIN, vuln_count * VULN_CAP_MAX
 
 
-def _clamp_service_score(score: float, vuln_count: int) -> float:
-    lo, hi = _service_score_bounds(vuln_count)
+def _clamp_service_score(score: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, score))
 
 
@@ -130,18 +191,42 @@ def _service_recent_pace(team: TeamScoreboard, service_name: str, window: int = 
     trailing = sigmas[-FLATLINE_LOOKBACK:]
     if len(trailing) >= 2 and all(s == 0 for s in trailing):
         return 0.0
+
+    recent_ticks = team.ticks[-window:]
+    counted = 0.0
+    attempted = 0.0
+    for tick in recent_ticks:
+        svc = tick.service(service_name)
+        if not svc:
+            continue
+        for kind in _scoring_streams():
+            val = svc.stats[kind]
+            if val.capped and (val.capped_discarded or 0) > 0:
+                counted += abs(val.numeric)
+                attempted += abs(val.numeric) + abs(val.capped_discarded or 0)
+            elif val.numeric != 0:
+                counted += abs(val.numeric)
+                attempted += abs(val.numeric)
+
+    cap_scale = (counted / attempted) if attempted > 0 else 1.0
+    if all(_stream_at_cap(team, service_name, kind) for kind in _active_streams(team, service_name, 1)):
+        cap_scale = 0.0
+
     recent = sigmas[-window:]
-    return sum(recent) / len(recent)
+    return (sum(recent) / len(recent)) * cap_scale
 
 
 def _project_service(
+    team: TeamScoreboard,
+    service_name: str,
     current: float,
     pace: float,
     remaining: int,
-    vuln_count: int,
+    min_vulns: int,
 ) -> tuple[float, float]:
     uncapped = current + pace * remaining
-    return _clamp_service_score(uncapped, vuln_count), uncapped
+    lo, hi = _service_projection_bounds(team, service_name, min_vulns)
+    return _clamp_service_score(uncapped, lo, hi), uncapped
 
 
 def _project_team_with_caps(
@@ -165,8 +250,9 @@ def _project_team_with_caps(
     for name in names:
         current_svc = totals.get(name, 0.0)
         pace_svc = _service_recent_pace(team, name, window)
-        vulns = _estimate_vulns_for_service(team, name, min_vulns)
-        projected_svc, uncapped_svc = _project_service(current_svc, pace_svc, remaining, vulns)
+        projected_svc, uncapped_svc = _project_service(
+            team, name, current_svc, pace_svc, remaining, min_vulns
+        )
         projected_sum += projected_svc
         uncapped_sum += uncapped_svc
 
@@ -290,6 +376,7 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
             benign_ok = benign_fail = malicious_block = malicious_leak = 0.0
             down_ticks = capped_ticks = no_comm_ticks = 0
 
+            points_capped_total = 0.0
             for tick in team.ticks:
                 svc = tick.service(service_name)
                 if not svc:
@@ -301,8 +388,14 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
                 malicious_leak += svc.stats[StatKind.MALICIOUS_OK].numeric
                 if svc.stats[StatKind.DOWN].numeric > 0:
                     down_ticks += 1
-                if svc.stats[StatKind.CAPPED].capped:
+                cap_val = svc.stats[StatKind.CAPPED]
+                if cap_val.numeric > 0 or cap_val.capped:
                     capped_ticks += 1
+                    points_capped_total += cap_val.numeric
+                for kind in _scoring_streams():
+                    stream = svc.stats[kind]
+                    if stream.capped_discarded:
+                        points_capped_total += abs(stream.capped_discarded)
                 if any(v.no_comm for v in svc.stats.values()):
                     no_comm_ticks += 1
 
@@ -315,7 +408,9 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
             )
 
             estimated_vulns = _estimate_vulns_for_service(team, service_name)
-            svc_max, svc_min = _service_score_bounds(estimated_vulns)
+            streams = _active_streams(team, service_name, DEFAULT_MIN_VULNS)
+            streams_saturated = sum(1 for kind in streams if _stream_at_cap(team, service_name, kind))
+            svc_min, svc_max = _service_projection_bounds(team, service_name, DEFAULT_MIN_VULNS)
 
             summaries.append(
                 ServiceSummary(
@@ -336,6 +431,8 @@ def service_summaries(snapshot: CompetitionSnapshot) -> list[ServiceSummary]:
                     cap_headroom_up=max(0.0, svc_max - total_sigma),
                     cap_headroom_down=max(0.0, total_sigma - svc_min),
                     estimated_vulns=estimated_vulns,
+                    streams_saturated=streams_saturated,
+                    points_capped_total=points_capped_total,
                 )
             )
     return summaries

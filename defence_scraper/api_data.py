@@ -190,6 +190,7 @@ def service_detail_payload(
                     row[f"{kind.value}_raw"] = val.raw
                     row[f"{kind.value}_capped"] = val.capped
                     row[f"{kind.value}_no_comm"] = val.no_comm
+                    row[f"{kind.value}_capped_discarded"] = val.capped_discarded
                 rows.append(row)
 
     summaries: list[dict[str, Any]] = []

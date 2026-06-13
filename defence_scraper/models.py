@@ -33,6 +33,7 @@ class StatValue:
     value: float | None
     capped: bool = False
     no_comm: bool = False
+    capped_discarded: float | None = None
 
     @property
     def numeric(self) -> float:
@@ -147,6 +148,7 @@ class TeamScoreboard:
                                 "value": val.value,
                                 "capped": val.capped,
                                 "no_comm": val.no_comm,
+                                "capped_discarded": val.capped_discarded,
                             }
                             for kind, val in s.stats.items()
                         }

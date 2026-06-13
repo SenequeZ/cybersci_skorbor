@@ -160,7 +160,7 @@ function renderServices() {
   tbody.innerHTML = "";
   const sorted = [...state.services].sort((a, b) => b.total_sigma - a.total_sigma);
   if (!sorted.length || sorted.every((s) => s.ticks_seen === 0)) {
-    tbody.innerHTML = `<tr><td colspan="11" class="muted">No tick data yet — service list will populate once competition starts.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="13" class="muted">No tick data yet — service list will populate once competition starts.</td></tr>`;
     return;
   }
   for (const row of sorted) {
@@ -175,6 +175,8 @@ function renderServices() {
       <td class="num">${fmt(row.down_ticks)}</td>
       <td class="num">${fmt(row.win_rate * 100, 0)}%</td>
       <td class="num">${fmt(row.estimated_vulns)}</td>
+      <td class="num">${fmt(row.streams_saturated)}</td>
+      <td class="num">${fmt(row.points_capped_total)}</td>
       <td class="num">${fmt(row.cap_headroom_up)}</td>
       <td class="num">${fmt(row.cap_headroom_down)}</td>
     `;
@@ -263,9 +265,16 @@ function populateServiceSelect() {
   else if (names.length) sel.value = names[0];
 }
 
-function statCell(raw, value, capped, noComm) {
+function statCell(raw, value, capped, noComm, cappedDiscarded) {
   if (noComm || raw === "-") return `<td class="num muted">-</td>`;
-  if (capped) return `<td class="num capped" title="Not counted">${raw}</td>`;
+  if (capped && cappedDiscarded != null && cappedDiscarded > 0) {
+    const cls = value > 0 ? "positive" : value < 0 ? "negative" : "";
+    const counted = value ?? 0;
+    return `<td class="num ${cls}" title="${counted} counted, ${cappedDiscarded} capped off">${counted}<span class="capped">/${cappedDiscarded}</span></td>`;
+  }
+  if (capped && raw && String(raw).startsWith("/")) {
+    return `<td class="num capped" title="All points capped">${raw}</td>`;
+  }
   const cls = value > 0 ? "positive" : value < 0 ? "negative" : "";
   const display = raw !== "" && raw != null ? raw : fmt(value);
   return `<td class="num ${cls}">${display}</td>`;
@@ -360,7 +369,7 @@ function renderPerService() {
         <td class="num">${row.tick}</td>
         <td>${row.time || "-"}</td>
         <td><span class="team-chip">T${row.team_id}</span> ${row.team_name}</td>
-        ${STAT_COLS.map((c) => statCell(row[`${c}_raw`], row[c], row[`${c}_capped`], row[`${c}_no_comm`])).join("")}
+        ${STAT_COLS.map((c) => statCell(row[`${c}_raw`], row[c], row[`${c}_capped`], row[`${c}_no_comm`], row[`${c}_capped_discarded`])).join("")}
         <td class="num ${row.cumulative_sigma > 0 ? "positive" : row.cumulative_sigma < 0 ? "negative" : ""}">${fmt(row.cumulative_sigma)}</td>
       `;
       tbody.appendChild(tr);
