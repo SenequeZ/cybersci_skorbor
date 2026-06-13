@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberSci Defence Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="title-text">CyberSci Defence Dashboard</h1>
+      <div class="status" id="status-text">Loading…</div>
+    </div>
+    <div class="controls">
+      <label class="toggle">
+        <input type="checkbox" id="auto-refresh" checked>
+        Auto-refresh (30s)
+      </label>
+      <label>
+        <span class="muted">Total ticks</span>
+        <input type="number" id="total-ticks" min="1" max="500" placeholder="auto">
+      </label>
+      <button class="primary" id="refresh-btn">Refresh now</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="tabs">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="projections">Projections</button>
+      <button class="tab" data-tab="services">Services</button>
+      <button class="tab" data-tab="per-service">Per service</button>
+      <button class="tab" data-tab="team">Team detail</button>
+      <button class="tab" data-tab="compare">Compare</button>
+      <button class="tab" data-tab="explore">Explore data</button>
+    </div>
+
+    <div id="loading" class="loading">Fetching scoreboard data…</div>
+
+    <section id="tab-overview" class="tab-panel">
+      <div class="grid-2">
+        <div class="panel">
+          <h2>Score chart</h2>
+          <div class="chart-wrap">
+            <canvas id="score-chart"></canvas>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Standings</h2>
+          <div class="legend">Click a row to open team detail</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Place</th>
+                  <th>Team</th>
+                  <th class="num">Score</th>
+                  <th class="num">Ticks</th>
+                  <th class="num">Recent pace</th>
+                  <th class="num">Projected</th>
+                  <th class="num">Recent 5t</th>
+                </tr>
+              </thead>
+              <tbody id="standings-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-projections" class="tab-panel hidden">
+      <div class="panel">
+        <h2>Projected final standings</h2>
+        <div class="legend">Per-service pace (last 5 ticks), capped at +100 / −100 per service. * = cap binding.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="num">Proj place</th>
+                <th>Team</th>
+                <th class="num">Current</th>
+                <th class="num">Avg/tick</th>
+                <th class="num">Projected</th>
+                <th class="num">Uncapped</th>
+                <th class="num">Done</th>
+                <th class="num">Left</th>
+              </tr>
+            </thead>
+            <tbody id="projections-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-services" class="tab-panel hidden">
+      <div class="panel">
+        <h2>Service breakdown</h2>
+        <div class="legend">Σ totals per service, capped at ±100. Headroom = room left to gain (+) or lose (−) before cap.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Team</th>
+                <th>Service</th>
+                <th class="num">Σ total</th>
+                <th class="num">Avg Σ</th>
+                <th class="num">Blocks</th>
+                <th class="num">Leaks</th>
+                <th class="num">Down</th>
+                <th class="num">Win%</th>
+                <th class="num">↑ Room</th>
+                <th class="num">↓ Room</th>
+              </tr>
+            </thead>
+            <tbody id="services-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-per-service" class="tab-panel hidden">
+      <div class="panel">
+        <div class="filters">
+          <label>
+            Service
+            <select id="per-service-select"></select>
+          </label>
+          <label>
+            Team
+            <select id="per-service-team">
+              <option value="all">All teams</option>
+            </select>
+          </label>
+        </div>
+        <h2 id="per-service-title">Service</h2>
+        <div class="muted" id="per-service-meta"></div>
+        <div class="stat-cards" id="per-service-summary"></div>
+        <div class="grid-2">
+          <div class="panel" style="margin-bottom:0">
+            <h2>Cumulative Σ</h2>
+            <div class="chart-wrap" style="height:260px">
+              <canvas id="per-service-chart"></canvas>
+            </div>
+          </div>
+          <div class="panel" style="margin-bottom:0">
+            <h2>Team totals</h2>
+            <div class="table-wrap" style="max-height:260px">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Team</th>
+                    <th class="num">Σ</th>
+                    <th class="num">Avg/tick</th>
+                    <th class="num">↑</th>
+                    <th class="num">↓</th>
+                  </tr>
+                </thead>
+                <tbody id="per-service-totals-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="margin-top:1rem">
+          <h2>Tick-by-tick stats</h2>
+          <div class="legend">All stat columns per tick — 😇 benign OK/fail, 😈 malicious hit/block, 💀 down, 😎 capped, Σ net</div>
+          <div class="table-wrap">
+            <table>
+              <thead id="per-service-ticks-head"></thead>
+              <tbody id="per-service-ticks-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-team" class="tab-panel hidden">
+      <div class="panel">
+        <div class="filters">
+          <label>
+            Team
+            <select id="team-select"></select>
+          </label>
+        </div>
+        <h2 id="team-title">Team</h2>
+        <div class="muted" id="team-meta"></div>
+        <div class="stat-cards" id="team-services"></div>
+        <div class="table-wrap">
+          <table>
+            <thead id="team-ticks-head"></thead>
+            <tbody id="team-ticks-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-compare" class="tab-panel hidden">
+      <div class="panel">
+        <div class="filters">
+          <label>Team A <select id="compare-a"></select></label>
+          <label>Team B <select id="compare-b"></select></label>
+          <button id="compare-btn">Compare ticks</button>
+        </div>
+        <div class="compare-score" id="compare-title">—</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="num">Tick</th>
+                <th class="num">A Δ</th>
+                <th class="num">B Δ</th>
+                <th>Winner</th>
+              </tr>
+            </thead>
+            <tbody id="compare-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-explore" class="tab-panel hidden">
+      <div class="panel">
+        <h2>Raw tick data</h2>
+        <div class="filters">
+          <label>
+            Filter team
+            <select id="explore-team">
+              <option value="all">All teams</option>
+            </select>
+          </label>
+          <label>
+            Search
+            <input type="text" id="explore-search" placeholder="Filter columns…">
+          </label>
+        </div>
+        <div class="legend">Last 200 rows, all stat columns — export full data via CLI <code>python main.py export data</code></div>
+        <div class="table-wrap">
+          <table>
+            <thead id="explore-head"></thead>
+            <tbody id="explore-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>Data from defence.thegreatreset.ca · refreshes every 30s</footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>
